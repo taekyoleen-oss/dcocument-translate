@@ -525,6 +525,7 @@
 
   /* ── Init ──────────────────────────────────────────────────── */
   (async function init() {
+    restoreSidebar();
     await refreshHistory();
 
     // 페이지 새로고침 시 진행 중인 Job 복원
@@ -959,6 +960,14 @@
     const btn     = document.getElementById('sidebar-toggle');
     const isNowCollapsed = sidebar.classList.toggle('collapsed');
     btn.title = isNowCollapsed ? '히스토리 열기' : '히스토리 숨기기';
+    localStorage.setItem('sidebarCollapsed', isNowCollapsed ? '1' : '0');
+  }
+
+  function restoreSidebar() {
+    if (localStorage.getItem('sidebarCollapsed') === '1') {
+      document.querySelector('.sidebar').classList.add('collapsed');
+      document.getElementById('sidebar-toggle').title = '히스토리 열기';
+    }
   }
 
   /* ── Section management ────────────────────────────────────── */
