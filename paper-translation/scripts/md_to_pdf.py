@@ -29,7 +29,17 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 # ── 폰트 등록 ──────────────────────────────────────────────────────────────
-FONT_DIR = Path("C:/Windows/Fonts")
+import platform, sys as _sys
+if platform.system() == "Windows":
+    FONT_DIR = Path("C:/Windows/Fonts")
+else:
+    # Linux (Railway, Render 등): nixpacks로 설치된 NanumGothic 경로
+    _candidates = [
+        Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
+        Path("/usr/share/fonts/nanum/NanumGothic.ttf"),
+        Path("/usr/share/fonts/NanumGothic.ttf"),
+    ]
+    FONT_DIR = next((p.parent for p in _candidates if p.exists()), Path("/usr/share/fonts"))
 pdfmetrics.registerFont(TTFont("NanumGothic",     str(FONT_DIR / "NanumGothic.ttf")))
 pdfmetrics.registerFont(TTFont("NanumGothicBold", str(FONT_DIR / "NanumGothicBold.ttf")))
 BASE_FONT = "NanumGothic"
