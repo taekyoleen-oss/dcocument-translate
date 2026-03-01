@@ -24,3 +24,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# 잘못 생성된 파일
+web/nul
+
+# 출력 텍스트 임시 파일
+paper-translation/output_text_full.txt
