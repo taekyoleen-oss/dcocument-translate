@@ -302,6 +302,173 @@ async def process_translation(job_id: str):
     await asyncio.to_thread(_process_translation_sync, job_id)
 
 
+# ── 요약 파이프라인 ───────────────────────────────────────────────────────────
+def _summarize_section(client: anthropic.Anthropic, text: str, domain: str) -> str:
+    """단일 섹션(청크)의 핵심 내용을 추출한다."""
+    domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
+    prompt = (
+        f"다음은 {domain_label} 분야 논문의 한국어 번역 일부입니다.\n"
+        "이 부분의 핵심 내용만 간결하게 추출해주세요.\n"
+        "전문 용어와 수치 결과는 그대로 유지하고, 단락 형식으로 출력하세요.\n"
+        "추가 설명 없이 핵심 내용만 출력하세요.\n\n"
+        f"---\n{text}\n---\n\n핵심 내용:"
+    )
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.content[0].text.strip()
+
+
+def _generate_final_summary(client: anthropic.Anthropic, combined_points: str, domain: str) -> str:
+    """섹션별 핵심 내용 조각들로 구조화된 최종 요약을 생성한다."""
+    domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
+    prompt = (
+        f"당신은 {domain_label} 분야 학술 논문 요약 전문가입니다.\n\n"
+        "다음은 논문의 각 섹션에서 추출한 핵심 내용입니다. "
+        "이를 바탕으로 논문이 말하고자 하는 바를 중심으로 구조화된 한국어 요약문을 작성하세요.\n\n"
+        "요약문 구조 (마크다운 형식):\n"
+        "# [논문의 핵심 주제를 한 줄로]\n\n"
+        "## 연구 배경 및 문제 제기\n"
+        "## 제안 방법 및 접근법\n"
+        "## 주요 결과\n"
+        "## 결론 및 기여\n\n"
+        "작성 규칙:\n"
+        "- 각 섹션은 3-5 문장으로 핵심만 서술하세요\n"
+        "- 중요한 수치와 통계는 반드시 포함하세요\n"
+        "- 전문 용어는 그대로 사용하세요\n"
+        "- 객관적이고 학술적인 문체로 작성하세요\n"
+        "- 추가 설명 없이 요약 본문만 출력하세요\n\n"
+        "논문 핵심 내용:\n"
+        f"---\n{combined_points}\n---\n\n"
+        "한국어 요약:"
+    )
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.content[0].text.strip()
+
+
+def _process_summary_sync(job_id: str):
+    """백그라운드 요약 파이프라인 (동기)."""
+    job = get_job(job_id)
+    if not job:
+        return
+
+    try:
+        paper_id   = job["paper_id"]
+        output_dir = OUTPUT_DIR / paper_id
+        md_path    = output_dir / "translation_ko.md"
+
+        if not md_path.exists():
+            raise FileNotFoundError(
+                "번역 마크다운 파일을 찾을 수 없습니다. 먼저 번역을 완료하세요."
+            )
+
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise EnvironmentError(
+                "ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다."
+            )
+
+        # ── Step 1: 번역본 읽기 ───────────────────────────────────────
+        update_job(job_id, {
+            "summary_status":   "processing",
+            "summary_step":     "번역본 읽는 중",
+            "summary_progress": 5,
+        })
+        content = md_path.read_text(encoding="utf-8")
+
+        # ── Step 2: 단락 기준 청크 분할 (~4000자) ────────────────────
+        CHUNK_TARGET = 4000
+        paragraphs = content.split("\n\n")
+        chunks: list[str] = []
+        current_chunk: list[str] = []
+        current_len = 0
+
+        for para in paragraphs:
+            if not para.strip():
+                continue
+            if current_len + len(para) > CHUNK_TARGET and current_chunk:
+                chunks.append("\n\n".join(current_chunk))
+                current_chunk = [para]
+                current_len   = len(para)
+            else:
+                current_chunk.append(para)
+                current_len += len(para)
+
+        if current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+
+        if not chunks:
+            raise ValueError("번역본 내용이 비어 있습니다.")
+
+        # ── Step 3: 각 청크 핵심 내용 추출 ───────────────────────────
+        client       = anthropic.Anthropic()
+        domain       = detect_domain(job["filename"])
+        total_chunks = len(chunks)
+        section_summaries: list[str] = []
+
+        for i, chunk in enumerate(chunks):
+            progress = 10 + int(55 * i / total_chunks)
+            update_job(job_id, {
+                "summary_step":     f"핵심 내용 추출 중 ({i+1}/{total_chunks})",
+                "summary_progress": progress,
+            })
+            section_summaries.append(_summarize_section(client, chunk, domain))
+
+        # ── Step 4: 구조화된 최종 요약 생성 ──────────────────────────
+        update_job(job_id, {"summary_step": "요약 정리 중", "summary_progress": 72})
+        combined      = "\n\n".join(section_summaries)
+        final_summary = _generate_final_summary(client, combined, domain)
+
+        # ── Step 5: 마크다운 저장 ──────────────────────────────────────
+        update_job(job_id, {"summary_step": "요약 저장 중", "summary_progress": 85})
+        summary_md = output_dir / "summary_ko.md"
+        summary_md.write_text(final_summary, encoding="utf-8")
+
+        # ── Step 6: PDF 생성 (font-boost=2) ───────────────────────────
+        update_job(job_id, {"summary_step": "요약 PDF 생성 중", "summary_progress": 90})
+        summary_pdf = output_dir / f"{paper_id}_요약.pdf"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "md_to_pdf.py"),
+                "--input",      str(summary_md),
+                "--output",     str(summary_pdf),
+                "--footer",     job["filename"],
+                "--font-boost", "2",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(BASE_DIR),
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or "(stderr 없음)"
+            raise RuntimeError(f"요약 PDF 생성 실패:\n{stderr}")
+
+        update_job(job_id, {
+            "summary_status":   "completed",
+            "summary_step":     "완료",
+            "summary_progress": 100,
+            "summary_pdf":      str(summary_pdf),
+        })
+
+    except Exception as exc:
+        update_job(job_id, {
+            "summary_status": "failed",
+            "summary_step":   "오류 발생",
+            "summary_error":  str(exc),
+        })
+
+
+async def process_summary(job_id: str):
+    await asyncio.to_thread(_process_summary_sync, job_id)
+
+
 # ── FastAPI 앱 ────────────────────────────────────────────────────────────────
 app = FastAPI(title="논문 번역 시스템")
 
@@ -429,6 +596,57 @@ async def view_original(job_id: str):
     if not input_path.exists():
         raise HTTPException(404, "원본 파일을 찾을 수 없습니다.")
     return FileResponse(str(input_path), media_type="application/pdf")
+
+
+@app.post("/api/jobs/{job_id}/summarize")
+async def start_summary(job_id: str, background_tasks: BackgroundTasks):
+    """요약 생성 시작 — 번역 완료 후 호출 가능."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job을 찾을 수 없습니다.")
+    if job["status"] != "completed":
+        raise HTTPException(400, "번역이 완료된 후 요약을 생성할 수 있습니다.")
+    if job.get("summary_status") in ("pending", "processing"):
+        raise HTTPException(400, "요약이 이미 진행 중입니다.")
+
+    update_job(job_id, {
+        "summary_status":   "pending",
+        "summary_step":     "요약 대기 중",
+        "summary_progress": 0,
+        "summary_error":    None,
+        "summary_pdf":      None,
+    })
+    background_tasks.add_task(process_summary, job_id)
+    return {"job_id": job_id, "summary_status": "pending"}
+
+
+@app.get("/api/jobs/{job_id}/view-summary")
+async def view_summary(job_id: str):
+    """요약 PDF 뷰어."""
+    job = get_job(job_id)
+    if not job or job.get("summary_status") != "completed":
+        raise HTTPException(404, "요약 PDF가 없습니다.")
+    pdf_path = Path(job["summary_pdf"])
+    if not pdf_path.exists():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    return FileResponse(str(pdf_path), media_type="application/pdf")
+
+
+@app.get("/api/jobs/{job_id}/download-summary")
+async def download_summary(job_id: str):
+    """요약 PDF 다운로드."""
+    job = get_job(job_id)
+    if not job or job.get("summary_status") != "completed":
+        raise HTTPException(404, "요약 PDF가 없습니다.")
+    pdf_path = Path(job["summary_pdf"])
+    if not pdf_path.exists():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    download_name = f"{Path(job['filename']).stem}_요약.pdf"
+    return FileResponse(
+        str(pdf_path),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
 
 
 @app.get("/api/jobs/{job_id}/download")

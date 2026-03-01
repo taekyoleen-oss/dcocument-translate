@@ -213,58 +213,58 @@ def math_image_flowable(formula: str, max_w: float = CONTENT_W):
 
 
 # ── 스타일 정의 ──────────────────────────────────────────────────────────
-def make_styles():
+def make_styles(font_boost: float = 0):
     s = {}
-    common = dict(fontName=BASE_FONT, spaceBefore=6, spaceAfter=8, leading=22)
+    common = dict(fontName=BASE_FONT, spaceBefore=6, spaceAfter=8, leading=22 + font_boost)
 
     s["h1"] = ParagraphStyle(
-        "h1", fontName=BOLD_FONT, fontSize=18, leading=28,
+        "h1", fontName=BOLD_FONT, fontSize=18 + font_boost, leading=28 + font_boost,
         spaceBefore=20, spaceAfter=12,
         textColor=colors.HexColor("#1a3a5c"), alignment=TA_CENTER,
     )
     s["h2"] = ParagraphStyle(
-        "h2", fontName=BOLD_FONT, fontSize=14, leading=22,
+        "h2", fontName=BOLD_FONT, fontSize=14 + font_boost, leading=22 + font_boost,
         spaceBefore=18, spaceAfter=8,
         textColor=colors.HexColor("#1a3a5c"),
     )
     s["h3"] = ParagraphStyle(
-        "h3", fontName=BOLD_FONT, fontSize=11.5, leading=20,
+        "h3", fontName=BOLD_FONT, fontSize=11.5 + font_boost, leading=20 + font_boost,
         spaceBefore=14, spaceAfter=6,
         textColor=colors.HexColor("#2c5f8a"),
     )
     s["body"] = ParagraphStyle(
-        "body", **common, fontSize=10, alignment=TA_JUSTIFY,
+        "body", **common, fontSize=10 + font_boost, alignment=TA_JUSTIFY,
     )
     s["bullet"] = ParagraphStyle(
-        "bullet", fontName=BASE_FONT, fontSize=10, leading=20,
+        "bullet", fontName=BASE_FONT, fontSize=10 + font_boost, leading=20 + font_boost,
         leftIndent=18, firstLineIndent=0, bulletIndent=6,
         spaceBefore=4, spaceAfter=4,
     )
     s["sub_bullet"] = ParagraphStyle(
-        "sub_bullet", fontName=BASE_FONT, fontSize=9.5, leading=18,
+        "sub_bullet", fontName=BASE_FONT, fontSize=9.5 + font_boost, leading=18 + font_boost,
         leftIndent=36, firstLineIndent=0, bulletIndent=24,
         spaceBefore=3, spaceAfter=3,
     )
     s["code"] = ParagraphStyle(
-        "code", fontName="Courier", fontSize=8.5, leading=14,
+        "code", fontName="Courier", fontSize=8.5 + font_boost, leading=14 + font_boost,
         leftIndent=20, spaceBefore=6, spaceAfter=6,
         backColor=colors.HexColor("#f4f4f4"),
     )
     s["quote"] = ParagraphStyle(
-        "quote", fontName=BASE_FONT, fontSize=9.5, leading=18,
+        "quote", fontName=BASE_FONT, fontSize=9.5 + font_boost, leading=18 + font_boost,
         leftIndent=24, spaceBefore=6, spaceAfter=6,
         textColor=colors.HexColor("#444444"),
     )
     s["table_h"] = ParagraphStyle(
-        "table_h", fontName=BOLD_FONT, fontSize=9,
-        leading=13, alignment=TA_CENTER,
+        "table_h", fontName=BOLD_FONT, fontSize=9 + font_boost,
+        leading=13 + font_boost, alignment=TA_CENTER,
     )
     s["table_c"] = ParagraphStyle(
-        "table_c", fontName=BASE_FONT, fontSize=9,
-        leading=13, alignment=TA_LEFT,
+        "table_c", fontName=BASE_FONT, fontSize=9 + font_boost,
+        leading=13 + font_boost, alignment=TA_LEFT,
     )
     s["math_center"] = ParagraphStyle(
-        "math_center", fontName=BASE_FONT, fontSize=10, leading=18,
+        "math_center", fontName=BASE_FONT, fontSize=10 + font_boost, leading=18 + font_boost,
         alignment=TA_CENTER, spaceBefore=10, spaceAfter=10,
         textColor=colors.HexColor("#1a1a1a"),
     )
@@ -506,11 +506,12 @@ def main():
     global FOOTER_TEXT
 
     parser = argparse.ArgumentParser(description="Markdown → PDF (Korean + Math)")
-    parser.add_argument("--input",   required=True, help="입력 .md 파일 경로")
-    parser.add_argument("--output",  required=True, help="출력 .pdf 파일 경로")
-    parser.add_argument("--title",   default="",    help="PDF 제목 (선택)")
-    parser.add_argument("--author",  default="",    help="PDF 저자 (선택)")
-    parser.add_argument("--footer",  default="",    help="푸터 텍스트 (선택)")
+    parser.add_argument("--input",      required=True,  help="입력 .md 파일 경로")
+    parser.add_argument("--output",     required=True,  help="출력 .pdf 파일 경로")
+    parser.add_argument("--title",      default="",     help="PDF 제목 (선택)")
+    parser.add_argument("--author",     default="",     help="PDF 저자 (선택)")
+    parser.add_argument("--footer",     default="",     help="푸터 텍스트 (선택)")
+    parser.add_argument("--font-boost", type=float, default=0, help="전체 폰트 크기 증가량 (pt)")
     args = parser.parse_args()
 
     md_path  = Path(args.input)
@@ -520,7 +521,7 @@ def main():
     # 푸터: 인자 없으면 md 파일명 사용
     FOOTER_TEXT = args.footer if args.footer else md_path.stem
 
-    styles = make_styles()
+    styles = make_styles(font_boost=args.font_boost)
     story  = parse_md(md_path, styles)
 
     doc = SimpleDocTemplate(

@@ -65,7 +65,29 @@
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+      overflow: hidden;
+      transition: width .25s ease, border-color .25s ease;
     }
+    .sidebar.collapsed {
+      width: 0;
+      border-right-color: transparent;
+    }
+
+    /* ── Sidebar toggle button ─────────────────────────────────── */
+    .sidebar-toggle {
+      background: transparent;
+      border: none;
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      line-height: 1;
+      opacity: .85;
+      transition: opacity .15s, background .15s;
+      flex-shrink: 0;
+    }
+    .sidebar-toggle:hover { opacity: 1; background: rgba(255,255,255,.15); }
 
     .sidebar-top {
       padding: 14px 16px;
@@ -307,6 +329,16 @@
       background: #525659;
     }
 
+    /* ── Summary panel ─────────────────────────────────────────── */
+    #summary-panel {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+    }
+
     /* ── Buttons ────────────────────────────────────────────────── */
     .btn {
       display: inline-flex;
@@ -344,6 +376,7 @@
 
 <!-- ── Header ─────────────────────────────────────────────────────────── -->
 <header>
+  <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="히스토리 숨기기">☰</button>
   <span class="logo">📄</span>
   <h1>논문 번역 시스템</h1>
   <span class="sub">영문 학술 논문 PDF → 한국어 번역</span>
@@ -451,10 +484,32 @@
         <div class="toggle-group">
           <button id="btn-translated" class="active" onclick="switchView('translated')">번역본</button>
           <button id="btn-original"                  onclick="switchView('original')">원본</button>
+          <button id="btn-summary"                   onclick="switchView('summary')">요약</button>
         </div>
-        <button class="btn btn-success" onclick="downloadPDF()">⬇ 다운로드</button>
+        <button id="btn-download" class="btn btn-success" onclick="downloadPDF()">⬇ 다운로드</button>
       </div>
       <iframe class="pdf-frame" id="pdf-frame" src="about:blank"></iframe>
+      <!-- 요약 상태 패널 (PDF 뷰어 대체) -->
+      <div id="summary-panel" class="hidden">
+        <div class="status-card">
+          <span class="s-icon" id="sum-icon">📝</span>
+          <div class="s-title" id="sum-title">논문 요약</div>
+          <div class="s-step"  id="sum-step">번역 완료 후 요약을 생성할 수 있습니다</div>
+          <div class="prog-bar hidden" id="sum-prog-bar">
+            <div class="prog-fill" id="sum-prog-fill" style="width:0%"></div>
+          </div>
+          <div class="prog-pct hidden" id="sum-prog-pct">0%</div>
+          <div class="err-box hidden" id="sum-err-box"></div>
+          <div style="margin-top:20px; display:flex; flex-direction:column; gap:10px; align-items:center;">
+            <button id="btn-gen-summary" class="btn btn-primary hidden" onclick="generateSummary()">
+              📝 요약 생성
+            </button>
+            <button id="btn-retry-summary" class="btn btn-outline hidden" onclick="generateSummary()">
+              다시 시도
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
   </main>
@@ -463,9 +518,10 @@
 <!-- ── Script ──────────────────────────────────────────────────────────── -->
 <script>
   /* ── State ─────────────────────────────────────────────────── */
-  let currentJobId  = null;
-  let pollTimer     = null;
-  let currentView   = 'translated';
+  let currentJobId      = null;
+  let pollTimer         = null;
+  let summaryPollTimer  = null;
+  let currentView       = 'translated';
 
   /* ── Init ──────────────────────────────────────────────────── */
   (async function init() {
@@ -665,31 +721,156 @@
   /* ── PDF Viewer ────────────────────────────────────────────── */
   function openViewer(job) {
     showSection('viewer');
-    document.getElementById('v-filename').textContent = job.filename + '  →  번역본';
     document.getElementById('viewer-section').dataset.jobId = job.id;
     currentView = 'translated';
     document.getElementById('btn-translated').classList.add('active');
     document.getElementById('btn-original').classList.remove('active');
+    document.getElementById('btn-summary').classList.remove('active');
+    document.getElementById('pdf-frame').classList.remove('hidden');
+    document.getElementById('summary-panel').classList.add('hidden');
+    document.getElementById('v-filename').textContent = job.filename + '  →  번역본';
     document.getElementById('pdf-frame').src = `/api/jobs/${job.id}/view-translated`;
+    setDownloadEnabled(true);
+    if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
   }
 
-  function switchView(view) {
+  async function switchView(view) {
     currentView = view;
     const jobId = document.getElementById('viewer-section').dataset.jobId;
     if (!jobId) return;
+
     document.getElementById('btn-translated').classList.toggle('active', view === 'translated');
     document.getElementById('btn-original').classList.toggle('active', view === 'original');
-    const url = view === 'translated'
-      ? `/api/jobs/${jobId}/view-translated`
-      : `/api/jobs/${jobId}/view-original`;
-    document.getElementById('pdf-frame').src = url;
+    document.getElementById('btn-summary').classList.toggle('active', view === 'summary');
+
+    if (view === 'summary') {
+      if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
+      try {
+        const job = await fetchJSON(`/api/jobs/${jobId}`);
+        updateSummaryPanel(job);
+      } catch (_) {}
+    } else {
+      // PDF 뷰 복원
+      document.getElementById('summary-panel').classList.add('hidden');
+      document.getElementById('pdf-frame').classList.remove('hidden');
+      if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
+      const job = await fetchJSON(`/api/jobs/${jobId}`).catch(() => null);
+      const label = view === 'translated' ? '번역본' : '원본';
+      if (job) document.getElementById('v-filename').textContent = job.filename + '  →  ' + label;
+      const url = view === 'translated'
+        ? `/api/jobs/${jobId}/view-translated`
+        : `/api/jobs/${jobId}/view-original`;
+      document.getElementById('pdf-frame').src = url;
+      setDownloadEnabled(view === 'translated');
+    }
+  }
+
+  /* ── 요약 UI ────────────────────────────────────────────────── */
+  function updateSummaryPanel(job) {
+    const panel    = document.getElementById('summary-panel');
+    const frame    = document.getElementById('pdf-frame');
+    const status   = job.summary_status;
+    const icon     = document.getElementById('sum-icon');
+    const title    = document.getElementById('sum-title');
+    const step     = document.getElementById('sum-step');
+    const progBar  = document.getElementById('sum-prog-bar');
+    const progPct  = document.getElementById('sum-prog-pct');
+    const errBox   = document.getElementById('sum-err-box');
+    const btnGen   = document.getElementById('btn-gen-summary');
+    const btnRetry = document.getElementById('btn-retry-summary');
+
+    if (status === 'completed') {
+      // 요약 PDF를 iframe에 표시
+      panel.classList.add('hidden');
+      frame.classList.remove('hidden');
+      frame.src = `/api/jobs/${job.id}/view-summary`;
+      document.getElementById('v-filename').textContent = job.filename + '  →  요약';
+      setDownloadEnabled(true);
+      if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
+      return;
+    }
+
+    // 패널 표시, iframe 숨김
+    panel.classList.remove('hidden');
+    frame.classList.add('hidden');
+    setDownloadEnabled(false);
+
+    if (!status) {
+      icon.textContent = '📝'; icon.classList.remove('pulse');
+      title.textContent = '논문 요약';
+      step.textContent  = '번역 완료! 요약을 생성할 수 있습니다.';
+      progBar.classList.add('hidden'); progPct.classList.add('hidden');
+      errBox.classList.add('hidden');
+      btnGen.classList.remove('hidden'); btnRetry.classList.add('hidden');
+    } else if (status === 'pending' || status === 'processing') {
+      icon.textContent = '📝'; icon.classList.add('pulse');
+      title.textContent = '요약 생성 중...';
+      step.textContent  = job.summary_step || '처리 중...';
+      const pct = job.summary_progress || 0;
+      progBar.classList.remove('hidden'); progPct.classList.remove('hidden');
+      document.getElementById('sum-prog-fill').style.width = `${pct}%`;
+      progPct.textContent = `${pct}%`;
+      errBox.classList.add('hidden');
+      btnGen.classList.add('hidden'); btnRetry.classList.add('hidden');
+      startSummaryPoll(job.id);
+    } else if (status === 'failed') {
+      icon.textContent = '❌'; icon.classList.remove('pulse');
+      title.textContent = '요약 생성 실패';
+      step.textContent  = job.summary_step || '오류 발생';
+      progBar.classList.add('hidden'); progPct.classList.add('hidden');
+      if (job.summary_error) {
+        errBox.textContent = job.summary_error;
+        errBox.classList.remove('hidden');
+      } else {
+        errBox.classList.add('hidden');
+      }
+      btnGen.classList.add('hidden'); btnRetry.classList.remove('hidden');
+    }
+  }
+
+  function startSummaryPoll(jobId) {
+    if (summaryPollTimer) return;
+    summaryPollTimer = setInterval(async () => {
+      if (currentView !== 'summary') {
+        clearInterval(summaryPollTimer); summaryPollTimer = null; return;
+      }
+      try {
+        const job = await fetchJSON(`/api/jobs/${jobId}`);
+        updateSummaryPanel(job);
+      } catch (_) {}
+    }, 2000);
+  }
+
+  async function generateSummary() {
+    const jobId = document.getElementById('viewer-section').dataset.jobId;
+    if (!jobId) return;
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/summarize`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`요약 생성 오류: ${err.detail || '알 수 없는 오류'}`);
+        return;
+      }
+      const job = await fetchJSON(`/api/jobs/${jobId}`);
+      updateSummaryPanel(job);
+    } catch (e) {
+      alert(`오류: ${e.message}`);
+    }
+  }
+
+  function setDownloadEnabled(enabled) {
+    const btn = document.getElementById('btn-download');
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? '1' : '0.4';
   }
 
   function downloadPDF() {
     const jobId = document.getElementById('viewer-section').dataset.jobId;
     if (!jobId) return;
     const a = document.createElement('a');
-    a.href = `/api/jobs/${jobId}/download`;
+    a.href = currentView === 'summary'
+      ? `/api/jobs/${jobId}/download-summary`
+      : `/api/jobs/${jobId}/download`;
     a.download = '';
     document.body.appendChild(a);
     a.click();
@@ -770,6 +951,14 @@
         startPoll(jobId);
       }
     } catch (_) {}
+  }
+
+  /* ── Sidebar toggle ────────────────────────────────────────── */
+  function toggleSidebar() {
+    const sidebar = document.querySelector('.sidebar');
+    const btn     = document.getElementById('sidebar-toggle');
+    const isNowCollapsed = sidebar.classList.toggle('collapsed');
+    btn.title = isNowCollapsed ? '히스토리 열기' : '히스토리 숨기기';
   }
 
   /* ── Section management ────────────────────────────────────── */
