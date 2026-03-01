@@ -125,7 +125,7 @@ def _check_cancel(job_id: str):
 
 
 # ── 번역 파이프라인 (동기) ───────────────────────────────────────────────────
-def _translate_chunk(client: anthropic.Anthropic, text: str, domain: str, lang: str) -> str:
+def _translate_chunk(client: anthropic.Anthropic, text: str, domain: str, lang: str, job_id: str = None) -> str:
     domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
     lang_label   = LANG_LABELS.get(lang, "영어")
 
@@ -155,12 +155,18 @@ def _translate_chunk(client: anthropic.Anthropic, text: str, domain: str, lang: 
         "한국어 번역:"
     )
 
-    response = client.messages.create(
+    # 스트리밍으로 수신하면서 토큰마다 취소 플래그 확인 → 즉각 취소 가능
+    parts: list[str] = []
+    with client.messages.stream(
         model="claude-sonnet-4-6",
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}]
-    )
-    return response.content[0].text
+    ) as stream:
+        for token in stream.text_stream:
+            if job_id and _cancel_flags.get(job_id):
+                raise TranslationCancelledError("사용자가 번역을 취소했습니다.")
+            parts.append(token)
+    return "".join(parts)
 
 
 def _process_translation_sync(job_id: str):
@@ -241,7 +247,7 @@ def _process_translation_sync(job_id: str):
                 "progress": progress,
                 "current_step": f"{lang_label} 번역 중 ({i+1}/{total_chunks} 청크 / {total_pages} 페이지)"
             })
-            translated = _translate_chunk(client, chunk, domain, lang)
+            translated = _translate_chunk(client, chunk, domain, lang, job_id)
             translated_parts.append(translated)
 
         # ── Step 4: 마크다운 파일 생성 ───────────────────────────────────
