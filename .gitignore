@@ -1,0 +1,26 @@
+# 번역 입출력 파일 (대용량, 개인 데이터)
+paper-translation/input/
+paper-translation/output/
+
+# 런타임 상태
+web/jobs.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# 환경변수
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

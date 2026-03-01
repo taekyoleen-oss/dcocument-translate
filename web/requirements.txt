@@ -1,0 +1,9 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+anthropic>=0.34.0
+pdfplumber>=0.10.0
+reportlab>=4.0.0
+matplotlib>=3.7.0
+pymupdf>=1.23.0
+aiofiles>=23.0.0

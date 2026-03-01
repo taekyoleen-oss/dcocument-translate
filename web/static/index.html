@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>논문 번역 시스템</title>
+  <style>
+    /* ── Reset & Variables ─────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --primary:    #1a3a5c;
+      --secondary:  #2c5f8a;
+      --accent:     #3b82f6;
+      --bg:         #f1f5f9;
+      --card:       #ffffff;
+      --text:       #0f172a;
+      --muted:      #64748b;
+      --border:     #e2e8f0;
+      --success:    #16a34a;
+      --warning:    #d97706;
+      --danger:     #dc2626;
+      --sidebar-w:  300px;
+      --header-h:   56px;
+    }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ────────────────────────────────────────────────── */
+    header {
+      height: var(--header-h);
+      background: var(--primary);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 24px;
+      flex-shrink: 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    }
+    header .logo { font-size: 22px; }
+    header h1   { font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+    header .sub { font-size: 12px; opacity: .65; margin-left: 4px; }
+
+    /* ── Layout ────────────────────────────────────────────────── */
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ───────────────────────────────────────────────── */
+    .sidebar {
+      width: var(--sidebar-w);
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .sidebar-top {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .sidebar-top h2 { font-size: 13px; font-weight: 700; color: var(--primary); }
+    .chip {
+      font-size: 11px; font-weight: 700;
+      background: var(--accent); color: #fff;
+      border-radius: 999px; padding: 2px 9px;
+    }
+
+    .history-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .history-scroll::-webkit-scrollbar { width: 4px; }
+    .history-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .empty-state .ei { font-size: 36px; margin-bottom: 8px; }
+
+    .hist-item {
+      padding: 11px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .15s;
+      margin-bottom: 3px;
+      border: 1.5px solid transparent;
+    }
+    .hist-item:hover { background: #f8fafc; }
+    .hist-item.active { background: #eff6ff; border-color: var(--accent); }
+
+    .hist-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 5px;
+      color: var(--text);
+    }
+    .hist-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .hist-date { font-size: 11px; color: var(--muted); }
+
+    .badge {
+      font-size: 10.5px; font-weight: 700;
+      padding: 2px 8px; border-radius: 999px;
+      white-space: nowrap;
+    }
+    .badge-ready      { background: #ede9fe; color: #5b21b6; }
+    .badge-cancelled  { background: #f3f4f6; color: #374151; }
+    .badge-pending    { background: #fef3c7; color: #92400e; }
+    .badge-processing { background: #dbeafe; color: #1e40af; }
+    .badge-completed  { background: #d1fae5; color: #065f46; }
+    .badge-failed     { background: #fee2e2; color: #991b1b; }
+
+    .sidebar-footer {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Main content ──────────────────────────────────────────── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* panel shared */
+    .panel {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      overflow: hidden;
+    }
+    .panel.top { align-items: flex-start; }
+
+    /* ── Upload section ─────────────────────────────────────────── */
+    #upload-section { background: var(--bg); }
+
+    .drop-wrap {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .drop-zone {
+      width: 100%;
+      border: 2.5px dashed var(--border);
+      border-radius: 20px;
+      padding: 56px 40px;
+      text-align: center;
+      background: var(--card);
+      cursor: pointer;
+      transition: border-color .2s, background .2s, transform .15s;
+      user-select: none;
+    }
+    .drop-zone:hover, .drop-zone.over {
+      border-color: var(--accent);
+      background: #f0f7ff;
+    }
+    .drop-zone.over { transform: scale(1.015); }
+
+    .drop-icon   { font-size: 60px; margin-bottom: 14px; }
+    .drop-title  { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    .drop-hint   {
+      font-size: 14px; color: var(--muted);
+      line-height: 1.7; margin-bottom: 24px;
+    }
+    .drop-note { font-size: 12px; color: var(--muted); }
+
+    /* ── Status section ─────────────────────────────────────────── */
+    #status-section { background: var(--bg); }
+
+    .status-card {
+      background: var(--card);
+      border-radius: 20px;
+      padding: 44px 40px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 4px 24px rgba(0,0,0,.08);
+    }
+
+    .s-icon  { font-size: 56px; margin-bottom: 14px; display: block; }
+    .s-file  { font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+    .s-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .s-step  { font-size: 14px; color: var(--muted); margin-bottom: 24px; min-height: 20px; }
+
+    .prog-bar {
+      background: var(--border);
+      border-radius: 999px;
+      height: 8px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .prog-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--secondary), var(--accent));
+      border-radius: 999px;
+      transition: width .5s ease;
+    }
+    .prog-pct { font-size: 13px; color: var(--muted); }
+
+    .err-box {
+      margin-top: 18px;
+      background: #fff5f5;
+      border: 1px solid #fecaca;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 12.5px;
+      color: var(--danger);
+      text-align: left;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+
+    /* ── Viewer section ─────────────────────────────────────────── */
+    #viewer-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .viewer-bar {
+      height: 52px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+
+    .v-filename {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--primary);
+    }
+
+    .toggle-group {
+      display: flex;
+      gap: 3px;
+      background: var(--bg);
+      padding: 3px;
+      border-radius: 8px;
+    }
+    .toggle-group button {
+      padding: 5px 16px;
+      border-radius: 6px;
+      border: none;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--muted);
+      background: transparent;
+      transition: all .15s;
+    }
+    .toggle-group button.active {
+      background: #fff;
+      color: var(--primary);
+      box-shadow: 0 1px 4px rgba(0,0,0,.1);
+    }
+
+    .pdf-frame {
+      flex: 1;
+      width: 100%;
+      border: none;
+      background: #525659;
+    }
+
+    /* ── Buttons ────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 10px 20px;
+      border-radius: 9px;
+      font-size: 13.5px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+      transition: all .15s;
+      letter-spacing: -.1px;
+    }
+    .btn-primary  { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--secondary); }
+    .btn-outline  { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
+    .btn-outline:hover { background: var(--primary); color: #fff; }
+    .btn-success  { background: #15803d; color: #fff; }
+    .btn-success:hover { background: var(--success); }
+    .btn-full     { width: 100%; }
+
+    /* ── Utility ────────────────────────────────────────────────── */
+    .hidden { display: none !important; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin .8s linear infinite; display: inline-block; }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+    .pulse { animation: pulse 1.8s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header>
+  <span class="logo">📄</span>
+  <h1>논문 번역 시스템</h1>
+  <span class="sub">영문 학술 논문 PDF → 한국어 번역</span>
+</header>
+
+<!-- ── Layout ─────────────────────────────────────────────────────────── -->
+<div class="layout">
+
+  <!-- Sidebar: History ──────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <h2>번역 히스토리</h2>
+      <span class="chip" id="hist-count">0</span>
+    </div>
+
+    <div class="history-scroll" id="hist-list">
+      <div class="empty-state">
+        <div class="ei">🗂️</div>
+        번역 내역이 없습니다.<br>
+        논문 PDF를 업로드해 보세요.
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="btn btn-primary btn-full" onclick="showUpload()">
+        + 새 번역 시작
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main ─────────────────────────────────────────────────────────── -->
+  <main class="main">
+
+    <!-- Upload Section -->
+    <div id="upload-section" class="panel">
+      <div class="drop-wrap">
+        <div class="drop-zone" id="drop-zone"
+             onclick="document.getElementById('file-input').click()">
+          <div class="drop-icon">📑</div>
+          <div class="drop-title">논문 PDF 업로드</div>
+          <div class="drop-hint">
+            PDF 파일을 여기에 드래그하거나<br>아래 버튼으로 파일을 선택하세요
+          </div>
+          <button class="btn btn-primary"
+                  onclick="event.stopPropagation(); document.getElementById('file-input').click()">
+            📂 파일 선택
+          </button>
+          <input type="file" id="file-input" accept=".pdf" hidden>
+        </div>
+        <div class="drop-note">지원 형식: PDF · 텍스트 레이어가 있는 파일 권장</div>
+      </div>
+    </div>
+
+    <!-- Ready Section (업로드 완료, 번역 대기) -->
+    <div id="ready-section" class="panel hidden">
+      <div class="status-card">
+        <span class="s-icon">📋</span>
+        <div class="s-file" id="r-file"></div>
+        <div class="s-title">번역 준비 완료</div>
+        <div class="s-step" id="r-meta"></div>
+        <div style="margin-top:28px; display:flex; flex-direction:column; gap:12px;">
+          <button class="btn btn-primary" style="font-size:16px; padding:14px 32px;"
+                  onclick="startTranslation()">
+            ▶ 번역 실행
+          </button>
+          <button class="btn btn-outline" onclick="showUpload()">
+            취소
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Section -->
+    <div id="status-section" class="panel hidden">
+      <div class="status-card">
+        <span class="s-icon" id="s-icon">⏳</span>
+        <div class="s-file" id="s-file"></div>
+        <div class="s-title" id="s-title">번역 준비 중...</div>
+        <div class="s-step"  id="s-step">잠시만 기다려주세요</div>
+        <div class="prog-bar">
+          <div class="prog-fill" id="prog-fill" style="width:0%"></div>
+        </div>
+        <div class="prog-pct" id="prog-pct">0%</div>
+        <div class="err-box hidden" id="err-box"></div>
+        <div id="action-wrap" style="margin-top:20px; display:flex; flex-direction:column; gap:10px; align-items:center;">
+          <button id="btn-cancel" class="btn btn-outline hidden"
+                  style="color:#dc2626; border-color:#dc2626; min-width:160px;"
+                  onclick="cancelTranslation()">
+            ✕ 번역 취소
+          </button>
+          <button id="btn-retry" class="btn btn-outline hidden" onclick="showUpload()">
+            다시 시도
+          </button>
+          <button id="btn-new-after-cancel" class="btn btn-primary hidden" onclick="showUpload()">
+            + 새 번역 시작
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Viewer Section -->
+    <div id="viewer-section" class="hidden">
+      <div class="viewer-bar">
+        <span class="v-filename" id="v-filename"></span>
+        <div class="toggle-group">
+          <button id="btn-translated" class="active" onclick="switchView('translated')">번역본</button>
+          <button id="btn-original"                  onclick="switchView('original')">원본</button>
+        </div>
+        <button class="btn btn-success" onclick="downloadPDF()">⬇ 다운로드</button>
+      </div>
+      <iframe class="pdf-frame" id="pdf-frame" src="about:blank"></iframe>
+    </div>
+
+  </main>
+</div>
+
+<!-- ── Script ──────────────────────────────────────────────────────────── -->
+<script>
+  /* ── State ─────────────────────────────────────────────────── */
+  let currentJobId  = null;
+  let pollTimer     = null;
+  let currentView   = 'translated';
+
+  /* ── Init ──────────────────────────────────────────────────── */
+  (async function init() {
+    await refreshHistory();
+
+    // 페이지 새로고침 시 진행 중인 Job 복원
+    const jobs = await fetchJSON('/api/jobs').catch(() => []);
+    const active = jobs.find(j => j.status === 'processing' || j.status === 'pending');
+    const readyJob = !active && jobs.find(j => j.status === 'ready');
+
+    if (active) {
+      currentJobId = active.id;
+      showSection('status');
+      applyStatus(active);
+      highlightHist(active.id);
+      startPoll(active.id);
+    } else if (readyJob) {
+      currentJobId = readyJob.id;
+      highlightHist(readyJob.id);
+      showReady(readyJob.filename, readyJob.page_count, readyJob.lang);
+    }
+  })();
+
+  /* ── File upload ───────────────────────────────────────────── */
+  const dropZone  = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  fileInput.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (f) uploadFile(f);
+    e.target.value = '';
+  });
+
+  // Drag & Drop
+  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
+  dropZone.addEventListener('dragenter', e => { e.preventDefault(); dropZone.classList.add('over'); });
+  dropZone.addEventListener('dragleave', e => {
+    if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('over');
+  });
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('over');
+    const f = e.dataTransfer.files[0];
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith('.pdf')) { alert('PDF 파일만 업로드 가능합니다.'); return; }
+    uploadFile(f);
+  });
+
+  // 페이지 전체에서 기본 드래그 동작 방지
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('drop',     e => e.preventDefault());
+
+  const LANG_META = {
+    en: { label: '영어',   flag: '🇺🇸' },
+    ja: { label: '일본어', flag: '🇯🇵' },
+  };
+
+  async function uploadFile(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      // 업로드 중 표시
+      showSection('status');
+      applyStatus({ status: 'pending', filename: file.name, current_step: '파일 업로드 중...', progress: 5 });
+
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `서버 오류 (${res.status})`);
+      }
+      const { job_id, filename, page_count, lang } = await res.json();
+      currentJobId = job_id;
+
+      await refreshHistory();
+      highlightHist(job_id);
+
+      // 번역 대기 화면으로 전환
+      showReady(filename, page_count, lang);
+    } catch (err) {
+      applyStatus({ status: 'failed', filename: file.name, current_step: '업로드 실패', progress: 0, error: err.message });
+    }
+  }
+
+  function showReady(filename, pageCount, lang) {
+    showSection('ready');
+    document.getElementById('r-file').textContent = filename;
+    const lm = LANG_META[lang] || { label: lang || '알 수 없음', flag: '🌐' };
+    const pageStr = pageCount ? `총 ${pageCount}페이지` : '';
+    document.getElementById('r-meta').textContent =
+      [pageStr, `${lm.flag} ${lm.label} 논문`, '번역 실행 버튼을 눌러 시작하세요']
+        .filter(Boolean).join(' · ');
+  }
+
+  async function startTranslation() {
+    if (!currentJobId) return;
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/start`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '시작 실패');
+      }
+      showSection('status');
+      applyStatus({ status: 'pending', filename: '', current_step: '번역 시작 중...', progress: 0 });
+      startPoll(currentJobId);
+    } catch (err) {
+      alert(`번역 시작 오류: ${err.message}`);
+    }
+  }
+
+  /* ── Polling ───────────────────────────────────────────────── */
+  function startPoll(jobId) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+      try {
+        const job = await fetchJSON(`/api/jobs/${jobId}`);
+        applyStatus(job);
+        updateHistItem(job);
+
+        if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          if (job.status === 'completed') openViewer(job);
+        }
+      } catch (_) { /* 네트워크 일시 오류 무시 */ }
+    }, 2000);
+  }
+
+  /* ── Status card ───────────────────────────────────────────── */
+  const STATUS_ICONS = {
+    pending:    '⏳',
+    processing: '🔄',
+    completed:  '✅',
+    failed:     '❌',
+    cancelled:  '🚫',
+    cancelling: '⏹️',
+  };
+
+  const STATUS_TITLES = {
+    completed:  '번역 완료!',
+    failed:     '번역 실패',
+    cancelled:  '번역 취소됨',
+    cancelling: '취소 중...',
+  };
+
+  function applyStatus(job) {
+    const { status, filename, current_step, progress, error } = job;
+
+    document.getElementById('s-icon').textContent  = STATUS_ICONS[status] || '⏳';
+    document.getElementById('s-file').textContent  = filename || '';
+    document.getElementById('s-title').textContent = STATUS_TITLES[status] || '번역 중...';
+    document.getElementById('s-step').textContent  = current_step || '';
+    document.getElementById('prog-fill').style.width = `${progress || 0}%`;
+    document.getElementById('prog-pct').textContent  = `${progress || 0}%`;
+
+    const errBox = document.getElementById('err-box');
+    if (error) {
+      errBox.textContent = error;
+      errBox.classList.remove('hidden');
+    } else {
+      errBox.classList.add('hidden');
+    }
+
+    // 상태별 버튼 표시
+    const canCancel = status === 'pending' || status === 'processing';
+    const isFailed  = status === 'failed';
+    const isCancelled = status === 'cancelled';
+
+    document.getElementById('btn-cancel').classList.toggle('hidden', !canCancel);
+    document.getElementById('btn-retry').classList.toggle('hidden', !isFailed);
+    document.getElementById('btn-new-after-cancel').classList.toggle('hidden', !isCancelled);
+
+    const icon = document.getElementById('s-icon');
+    if (status === 'processing' || status === 'pending') icon.classList.add('pulse');
+    else                                                  icon.classList.remove('pulse');
+  }
+
+  async function cancelTranslation() {
+    if (!currentJobId) return;
+    const btn = document.getElementById('btn-cancel');
+    btn.disabled = true;
+    btn.textContent = '취소 중...';
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/cancel`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`취소 오류: ${err.detail || '알 수 없는 오류'}`);
+        btn.disabled = false;
+        btn.textContent = '✕ 번역 취소';
+      }
+      // 폴링이 취소 상태를 감지해서 UI 업데이트
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '✕ 번역 취소';
+    }
+  }
+
+  /* ── PDF Viewer ────────────────────────────────────────────── */
+  function openViewer(job) {
+    showSection('viewer');
+    document.getElementById('v-filename').textContent = job.filename + '  →  번역본';
+    document.getElementById('viewer-section').dataset.jobId = job.id;
+    currentView = 'translated';
+    document.getElementById('btn-translated').classList.add('active');
+    document.getElementById('btn-original').classList.remove('active');
+    document.getElementById('pdf-frame').src = `/api/jobs/${job.id}/view-translated`;
+  }
+
+  function switchView(view) {
+    currentView = view;
+    const jobId = document.getElementById('viewer-section').dataset.jobId;
+    if (!jobId) return;
+    document.getElementById('btn-translated').classList.toggle('active', view === 'translated');
+    document.getElementById('btn-original').classList.toggle('active', view === 'original');
+    const url = view === 'translated'
+      ? `/api/jobs/${jobId}/view-translated`
+      : `/api/jobs/${jobId}/view-original`;
+    document.getElementById('pdf-frame').src = url;
+  }
+
+  function downloadPDF() {
+    const jobId = document.getElementById('viewer-section').dataset.jobId;
+    if (!jobId) return;
+    const a = document.createElement('a');
+    a.href = `/api/jobs/${jobId}/download`;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  /* ── History ───────────────────────────────────────────────── */
+  async function refreshHistory() {
+    const jobs = await fetchJSON('/api/jobs').catch(() => []);
+    renderHistory(jobs);
+  }
+
+  function renderHistory(jobs) {
+    document.getElementById('hist-count').textContent = jobs.length;
+    const list = document.getElementById('hist-list');
+
+    if (!jobs.length) {
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="ei">🗂️</div>
+          번역 내역이 없습니다.<br>논문 PDF를 업로드해 보세요.
+        </div>`;
+      return;
+    }
+
+    list.innerHTML = jobs.map(job => {
+      const d = new Date(job.created_at);
+      const fmt = `${d.getFullYear()}.${p2(d.getMonth()+1)}.${p2(d.getDate())} `
+                + `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+      return `
+        <div class="hist-item ${job.id === currentJobId ? 'active' : ''}"
+             id="hi-${job.id}" onclick="selectJob('${job.id}')">
+          <div class="hist-name" title="${esc(job.filename)}">${esc(job.filename)}</div>
+          <div class="hist-meta">
+            <span class="hist-date">${fmt}</span>
+            ${badgeHTML(job.status)}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function updateHistItem(job) {
+    const el = document.getElementById(`hi-${job.id}`);
+    if (!el) { refreshHistory(); return; }
+    const meta = el.querySelector('.hist-meta');
+    if (meta) {
+      const dateEl = meta.querySelector('.hist-date');
+      meta.innerHTML = '';
+      if (dateEl) meta.appendChild(dateEl);
+      meta.insertAdjacentHTML('beforeend', badgeHTML(job.status));
+    }
+  }
+
+  function highlightHist(jobId) {
+    document.querySelectorAll('.hist-item').forEach(el => el.classList.remove('active'));
+    const el = document.getElementById(`hi-${jobId}`);
+    if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest' }); }
+  }
+
+  async function selectJob(jobId) {
+    currentJobId = jobId;
+    highlightHist(jobId);
+    try {
+      const job = await fetchJSON(`/api/jobs/${jobId}`);
+      if (job.status === 'completed') {
+        showSection('viewer');
+        openViewer(job);
+      } else if (job.status === 'ready') {
+        showReady(job.filename, job.page_count, job.lang);
+      } else if (job.status === 'failed' || job.status === 'cancelled') {
+        showSection('status');
+        applyStatus(job);
+        if (pollTimer) clearInterval(pollTimer);
+      } else {
+        showSection('status');
+        applyStatus(job);
+        if (pollTimer) clearInterval(pollTimer);
+        startPoll(jobId);
+      }
+    } catch (_) {}
+  }
+
+  /* ── Section management ────────────────────────────────────── */
+  const SECTIONS = ['upload', 'ready', 'status', 'viewer'];
+  function showSection(name) {
+    SECTIONS.forEach(s => document.getElementById(`${s}-section`).classList.add('hidden'));
+    document.getElementById(`${name}-section`).classList.remove('hidden');
+  }
+
+  function showUpload() {
+    currentJobId = null;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    showSection('upload');
+    document.querySelectorAll('.hist-item').forEach(el => el.classList.remove('active'));
+  }
+
+  /* ── Helpers ───────────────────────────────────────────────── */
+  async function fetchJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${r.status}`);
+    return r.json();
+  }
+
+  function p2(n) { return String(n).padStart(2, '0'); }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function badgeHTML(status) {
+    const map = {
+      ready:      '<span class="badge badge-ready">대기</span>',
+      pending:    '<span class="badge badge-pending">준비중</span>',
+      processing: '<span class="badge badge-processing">번역중</span>',
+      completed:  '<span class="badge badge-completed">완료</span>',
+      failed:     '<span class="badge badge-failed">실패</span>',
+      cancelled:  '<span class="badge badge-cancelled">취소</span>',
+    };
+    return map[status] || '';
+  }
+</script>
+</body>
+</html>
