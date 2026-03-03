@@ -5,6 +5,9 @@ paper-translation/output/
 # 런타임 상태
 web/jobs.json
 
+# API 키 (로컬 설정)
+web/config.json
+
 # Python
 __pycache__/
 *.py[cod]

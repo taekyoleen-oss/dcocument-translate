@@ -16,7 +16,7 @@ import re
 
 import anthropic
 import pdfplumber
-from fastapi import FastAPI, Form, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Form, Body, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
@@ -32,6 +32,30 @@ STATIC_DIR  = WEB_DIR / "static"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── API 키 관리 ───────────────────────────────────────────────────────────────
+CONFIG_FILE = WEB_DIR / "config.json"
+_api_key: str = ""
+
+def _load_config():
+    """서버 시작 시 API 키를 환경변수 또는 config.json에서 로드."""
+    global _api_key
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if env_key:
+        _api_key = env_key
+        return
+    if CONFIG_FILE.exists():
+        try:
+            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            _api_key = cfg.get("api_key", "")
+        except Exception:
+            pass
+
+_load_config()
+
+def _get_api_key() -> str:
+    """현재 유효한 API 키 반환."""
+    return _api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
 # ── 도메인 매핑 ──────────────────────────────────────────────────────────────
 DOMAIN_LABELS = {
@@ -269,10 +293,11 @@ def _process_translation_sync(job_id: str):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # API 키 확인
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        api_key = _get_api_key()
+        if not api_key:
             raise EnvironmentError(
-                "ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다. "
-                "서버 실행 전 set ANTHROPIC_API_KEY=sk-ant-... 으로 설정하세요."
+                "Anthropic API 키가 설정되지 않았습니다. "
+                "화면 우측 상단 ⚙ 버튼을 눌러 API 키를 입력하세요."
             )
 
         # ── Step 1: PDF 텍스트 추출 ──────────────────────────────────────
@@ -321,7 +346,7 @@ def _process_translation_sync(job_id: str):
             )
 
         # ── Step 3: Claude API 번역 ───────────────────────────────────────
-        client   = anthropic.Anthropic()
+        client   = anthropic.Anthropic(api_key=api_key)
         domain   = detect_domain(job["filename"])
         doc_type = job.get("doc_type", "academic")
         lang_label = LANG_LABELS.get(lang, lang)
@@ -606,9 +631,11 @@ def _process_summary_sync(job_id: str):
                 "번역 마크다운 파일을 찾을 수 없습니다. 먼저 번역을 완료하세요."
             )
 
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        api_key = _get_api_key()
+        if not api_key:
             raise EnvironmentError(
-                "ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다."
+                "Anthropic API 키가 설정되지 않았습니다. "
+                "화면 우측 상단 ⚙ 버튼을 눌러 API 키를 입력하세요."
             )
 
         # ── Step 1: 번역본 읽기 ───────────────────────────────────────
@@ -644,7 +671,7 @@ def _process_summary_sync(job_id: str):
             raise ValueError("번역본 내용이 비어 있습니다.")
 
         # ── Step 3: 각 청크 핵심 내용 추출 ───────────────────────────
-        client       = anthropic.Anthropic()
+        client       = anthropic.Anthropic(api_key=api_key)
         domain       = detect_domain(job["filename"])
         doc_type     = job.get("doc_type", "academic")
         total_chunks = len(chunks)
@@ -907,6 +934,29 @@ async def download_translated(job_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
+
+
+@app.post("/api/config/apikey")
+async def set_api_key(payload: dict = Body(...)):
+    """웹 UI에서 Anthropic API 키를 설정한다."""
+    global _api_key
+    key = payload.get("api_key", "").strip()
+    if not key.startswith("sk-ant-"):
+        raise HTTPException(400, "올바른 Anthropic API 키를 입력하세요 (sk-ant- 로 시작).")
+    _api_key = key
+    try:
+        CONFIG_FILE.write_text(
+            json.dumps({"api_key": key}, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+    return {"configured": True}
+
+
+@app.get("/api/config/apikey")
+async def get_api_key_status():
+    """API 키 설정 여부만 반환 (키 값은 노출하지 않음)."""
+    return {"configured": bool(_get_api_key())}
 
 
 @app.get("/api/jobs/{job_id}/download-word")

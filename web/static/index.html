@@ -371,6 +371,66 @@
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
     .pulse { animation: pulse 1.8s ease-in-out infinite; }
 
+    /* ── Settings button ───────────────────────────────────────── */
+    .settings-btn {
+      background: transparent;
+      border: none;
+      color: rgba(255,255,255,.8);
+      font-size: 17px;
+      cursor: pointer;
+      padding: 4px 7px;
+      border-radius: 6px;
+      line-height: 1;
+      transition: background .15s, color .15s;
+      flex-shrink: 0;
+    }
+    .settings-btn:hover  { background: rgba(255,255,255,.15); color: #fff; }
+    .settings-btn.active { background: rgba(255,255,255,.2);  color: #fff; }
+
+    .api-key-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .api-key-dot.set   { background: #6ee7b7; }
+    .api-key-dot.unset { background: #f87171; animation: pulse 1.8s ease-in-out infinite; }
+
+    /* ── Settings panel ─────────────────────────────────────────── */
+    .settings-panel {
+      background: #1e4d7a;
+      border-bottom: 1px solid rgba(255,255,255,.12);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .settings-panel label {
+      color: rgba(255,255,255,.9);
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .settings-panel input[type="password"] {
+      flex: 1;
+      max-width: 400px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,.25);
+      background: rgba(255,255,255,.1);
+      color: #fff;
+      font-size: 13px;
+      font-family: monospace;
+      outline: none;
+    }
+    .settings-panel input::placeholder { color: rgba(255,255,255,.35); }
+    .settings-panel input:focus { border-color: var(--accent); background: rgba(255,255,255,.15); }
+    .api-key-msg { font-size: 12.5px; font-weight: 600; }
+    .api-key-msg.ok  { color: #6ee7b7; }
+    .api-key-msg.err { color: #fca5a5; }
+
     /* ── Doc type select (header) ───────────────────────────────── */
     .doc-type-select {
       background: var(--secondary);
@@ -410,7 +470,17 @@
     <option value="insurance">보험약관</option>
     <option value="general">일반내용</option>
   </select>
+  <span id="api-key-dot" class="api-key-dot unset" title="API 키 미설정 — ⚙ 클릭하여 설정" onclick="toggleSettings()"></span>
+  <button id="settings-btn" class="settings-btn" onclick="toggleSettings()" title="API 키 설정">⚙</button>
 </header>
+
+<!-- ── Settings panel ────────────────────────────────────────────────────── -->
+<div id="settings-panel" class="settings-panel hidden">
+  <label>Anthropic API 키</label>
+  <input type="password" id="api-key-input" placeholder="sk-ant-api03-..." autocomplete="off" />
+  <button class="btn btn-primary" style="padding:6px 16px;font-size:13px;" onclick="saveApiKey()">저장</button>
+  <span id="api-key-msg" class="api-key-msg"></span>
+</div>
 
 <!-- ── Layout ─────────────────────────────────────────────────────────── -->
 <div class="layout">
@@ -555,9 +625,16 @@
   let currentView       = 'translated';
 
   /* ── Init ──────────────────────────────────────────────────── */
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('api-key-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') saveApiKey();
+    });
+  });
+
   (async function init() {
     restoreSidebar();
     restoreDocType();
+    await checkApiKeyStatus();
     await refreshHistory();
 
     // 페이지 새로고침 시 진행 중인 Job 복원
@@ -1010,6 +1087,55 @@
         startPoll(jobId);
       }
     } catch (_) {}
+  }
+
+  /* ── API Key settings ──────────────────────────────────────── */
+  function toggleSettings() {
+    const panel = document.getElementById('settings-panel');
+    const btn   = document.getElementById('settings-btn');
+    const isNowHidden = panel.classList.toggle('hidden');
+    btn.classList.toggle('active', !isNowHidden);
+    if (!isNowHidden) document.getElementById('api-key-input').focus();
+  }
+
+  function updateApiKeyIndicator(configured) {
+    const dot = document.getElementById('api-key-dot');
+    dot.className = 'api-key-dot ' + (configured ? 'set' : 'unset');
+    dot.title = configured ? 'API 키 설정됨' : 'API 키 미설정 — ⚙ 클릭하여 설정';
+  }
+
+  async function checkApiKeyStatus() {
+    try {
+      const res = await fetchJSON('/api/config/apikey');
+      updateApiKeyIndicator(res.configured);
+    } catch (_) {}
+  }
+
+  async function saveApiKey() {
+    const key = document.getElementById('api-key-input').value.trim();
+    const msg = document.getElementById('api-key-msg');
+    if (!key) return;
+    try {
+      const res = await fetch('/api/config/apikey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        msg.textContent = '✓ 저장되었습니다';
+        msg.className = 'api-key-msg ok';
+        document.getElementById('api-key-input').value = '';
+        updateApiKeyIndicator(true);
+        setTimeout(() => { msg.textContent = ''; }, 3000);
+      } else {
+        msg.textContent = data.detail || '저장 실패';
+        msg.className = 'api-key-msg err';
+      }
+    } catch (e) {
+      msg.textContent = '네트워크 오류';
+      msg.className = 'api-key-msg err';
+    }
   }
 
   /* ── Doc type select ───────────────────────────────────────── */
