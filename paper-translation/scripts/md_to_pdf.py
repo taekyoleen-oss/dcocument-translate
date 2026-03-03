@@ -272,8 +272,31 @@ def make_styles(font_boost: float = 0):
 
 
 # ── 인라인 마크업 처리 ───────────────────────────────────────────────────
+# ReportLab Paragraph XML에서 허용되는 태그 목록
+_RL_ALLOWED_TAG = re.compile(
+    r"</?(?:b|i|u|super|sub|font|strike|a|br)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
 def inline(text: str) -> str:
     """**bold**, *italic*, `code`, 인라인 수식($...$) → reportlab XML 태그."""
+
+    # HTML <sup>/<sub> → ReportLab <super>/<sub> (번역 결과의 각주 표기 처리)
+    text = re.sub(r"<sup>(.*?)</sup>", r"<super>\1</super>",
+                  text, flags=re.IGNORECASE | re.DOTALL)
+
+    # ReportLab 허용 태그 이외의 < > 이스케이프
+    # (닫히지 않은 HTML 태그 등으로 인한 XML 파싱 오류 방지)
+    segs: list[str] = []
+    last = 0
+    for m in _RL_ALLOWED_TAG.finditer(text):
+        segs.append(text[last:m.start()].replace("<", "&lt;").replace(">", "&gt;"))
+        segs.append(m.group(0))
+        last = m.end()
+    segs.append(text[last:].replace("<", "&lt;").replace(">", "&gt;"))
+    text = "".join(segs)
+
     # 인라인 수식 먼저 변환 (이미지 삽입 불가 → 유니코드 텍스트)
     def math_sub(m):
         return f"<i>{latex_to_unicode(m.group(1))}</i>"
