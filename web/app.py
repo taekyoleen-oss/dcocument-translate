@@ -15,7 +15,11 @@ from threading import Lock
 import re
 
 import anthropic
-import fitz  # PyMuPDF
+try:
+    import fitz  # PyMuPDF
+    _FITZ_AVAILABLE = True
+except ImportError:
+    _FITZ_AVAILABLE = False
 import pdfplumber
 from fastapi import FastAPI, Form, Body, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -421,8 +425,8 @@ def _process_translation_sync(job_id: str):
         try:
             _generate_docx(md_path, docx_path)
             output_docx = str(docx_path)
-        except Exception:
-            pass  # DOCX 생성 실패해도 번역은 완료 처리
+        except Exception as docx_err:
+            update_job(job_id, {"docx_error": str(docx_err)})  # 실패 원인 기록
 
         update_job(job_id, {
             "status":       "completed",
@@ -464,6 +468,8 @@ def _extract_page_figures(pdf_path: Path, figures_dir: Path) -> dict[int, list[P
     - 텍스트와 이미지가 혼재하는 페이지: 개별 임베디드 이미지 추출
     반환: {page_idx: [img_path, ...]}
     """
+    if not _FITZ_AVAILABLE:
+        return {}
     result: dict[int, list[Path]] = {}
     doc = fitz.open(str(pdf_path))
     try:
@@ -571,10 +577,8 @@ def _generate_docx(md_path: Path, docx_path: Path):
             fig_path = Path(m_fig.group(1).strip())
             if fig_path.exists():
                 try:
-                    p = doc.add_paragraph()
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    run = p.add_run()
-                    run.add_picture(str(fig_path), width=Inches(5.5))
+                    doc.add_picture(str(fig_path), width=Inches(5.5))
+                    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
                 except Exception:
                     pass  # 그림 삽입 실패 시 조용히 skip
             i += 1

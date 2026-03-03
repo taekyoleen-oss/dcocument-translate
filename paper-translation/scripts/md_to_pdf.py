@@ -499,6 +499,11 @@ def parse_md(md_path: Path, styles: dict):
             i += 1
             continue
 
+        # ── 그림 마커 (DOCX 전용, PDF에서는 무시) ─────────────────────
+        if stripped.startswith("<!-- FIGURE:") and stripped.endswith("-->"):
+            i += 1
+            continue
+
         # ── 일반 본문 ──────────────────────────────────────────────────
         story.append(Paragraph(inline(stripped), styles["body"]))
         i += 1
