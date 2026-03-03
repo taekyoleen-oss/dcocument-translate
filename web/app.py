@@ -15,6 +15,7 @@ from threading import Lock
 import re
 
 import anthropic
+import fitz  # PyMuPDF
 import pdfplumber
 from fastapi import FastAPI, Form, Body, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -319,25 +320,41 @@ def _process_translation_sync(job_id: str):
         lang = job.get("lang") or detect_language(pages_text)
         update_job(job_id, {"lang": lang, "current_step": f"언어 감지 완료: {LANG_LABELS.get(lang, lang)}"})
 
-        # ── Step 2: 청크 분할 (~4000자 기준) ─────────────────────────────
+        # ── Step 1.5: 그림/이미지 추출 (PyMuPDF) ────────────────────────
+        _check_cancel(job_id)
+        update_job(job_id, {"current_step": "원본 그림 추출 중", "progress": 13})
+        figures_dir = output_dir / "figures"
+        figures_dir.mkdir(exist_ok=True)
+        try:
+            page_figures = _extract_page_figures(input_path, figures_dir)
+        except Exception:
+            page_figures = {}  # 추출 실패해도 번역은 계속
+
+        # ── Step 2: 청크 분할 (~4000자 기준, 페이지 추적 포함) ───────────
         CHUNK_TARGET = 4000
-        chunks = []
+        chunks: list[str] = []
+        chunk_pages: list[list[int]] = []
         current_chunk: list[str] = []
+        current_page_indices: list[int] = []
         current_len = 0
 
-        for page_text in pages_text:
+        for page_idx, page_text in enumerate(pages_text):
             if not page_text.strip():
                 continue
             if current_len + len(page_text) > CHUNK_TARGET and current_chunk:
                 chunks.append("\n\n".join(current_chunk))
+                chunk_pages.append(current_page_indices)
                 current_chunk = [page_text]
+                current_page_indices = [page_idx]
                 current_len = len(page_text)
             else:
                 current_chunk.append(page_text)
+                current_page_indices.append(page_idx)
                 current_len += len(page_text)
 
         if current_chunk:
             chunks.append("\n\n".join(current_chunk))
+            chunk_pages.append(current_page_indices)
 
         if not chunks:
             raise ValueError(
@@ -363,10 +380,17 @@ def _process_translation_sync(job_id: str):
             translated = _translate_chunk(client, chunk, domain, lang, job_id, doc_type)
             translated_parts.append(translated)
 
-        # ── Step 4: 마크다운 파일 생성 ───────────────────────────────────
+        # ── Step 4: 마크다운 파일 생성 (그림 마커 포함) ─────────────────
         _check_cancel(job_id)
         update_job(job_id, {"current_step": "번역 결과 취합 중", "progress": 88})
-        md_content = "\n\n---\n\n".join(translated_parts)
+        md_parts = []
+        for translated, pages in zip(translated_parts, chunk_pages):
+            part = translated
+            for p_idx in pages:
+                for fig_path in page_figures.get(p_idx, []):
+                    part += f"\n<!-- FIGURE:{fig_path} -->"
+            md_parts.append(part)
+        md_content = "\n\n---\n\n".join(md_parts)
         md_path = output_dir / "translation_ko.md"
         md_path.write_text(md_content, encoding="utf-8")
 
@@ -432,6 +456,57 @@ async def process_translation(job_id: str):
     await asyncio.to_thread(_process_translation_sync, job_id)
 
 
+# ── 그림 추출 (PyMuPDF) ──────────────────────────────────────────────────────
+def _extract_page_figures(pdf_path: Path, figures_dir: Path) -> dict[int, list[Path]]:
+    """PDF 각 페이지에서 이미지/그림을 추출한다.
+
+    - 텍스트가 거의 없는 페이지(그림 전용): 페이지 전체를 PNG로 렌더링
+    - 텍스트와 이미지가 혼재하는 페이지: 개별 임베디드 이미지 추출
+    반환: {page_idx: [img_path, ...]}
+    """
+    result: dict[int, list[Path]] = {}
+    doc = fitz.open(str(pdf_path))
+    try:
+        for page_idx, page in enumerate(doc):
+            img_list = page.get_images(full=True)
+            if not img_list:
+                continue
+
+            page_text = page.get_text("text") or ""
+            text_len = len(page_text.strip())
+            saved: list[Path] = []
+
+            if text_len < 100:
+                # 그림 전용 페이지: 전체 페이지를 PNG로 렌더링
+                mat = fitz.Matrix(1.5, 1.5)
+                pix = page.get_pixmap(matrix=mat)
+                img_path = figures_dir / f"page{page_idx + 1}_full.png"
+                pix.save(str(img_path))
+                saved.append(img_path)
+            else:
+                # 텍스트+이미지 혼재 페이지: 개별 이미지 추출
+                for img_idx, img_info in enumerate(img_list):
+                    xref = img_info[0]
+                    try:
+                        base_image = doc.extract_image(xref)
+                        img_bytes = base_image["image"]
+                        img_ext = base_image.get("ext", "png")
+                        # 너무 작은 이미지(아이콘 등) 제외 (10KB 미만)
+                        if len(img_bytes) < 10240:
+                            continue
+                        img_path = figures_dir / f"page{page_idx + 1}_img{img_idx + 1}.{img_ext}"
+                        img_path.write_bytes(img_bytes)
+                        saved.append(img_path)
+                    except Exception:
+                        continue
+
+            if saved:
+                result[page_idx] = saved
+    finally:
+        doc.close()
+    return result
+
+
 # ── DOCX 생성 ────────────────────────────────────────────────────────────────
 def _parse_table_row(line: str) -> list[str]:
     """파이프 테이블 행을 셀 목록으로 파싱."""
@@ -465,7 +540,7 @@ def _add_inline_runs(paragraph, text: str):
 def _generate_docx(md_path: Path, docx_path: Path):
     """마크다운 파일을 Word(.docx) 파일로 변환."""
     from docx import Document
-    from docx.shared import Pt
+    from docx.shared import Pt, Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     doc = Document()
@@ -487,6 +562,21 @@ def _generate_docx(md_path: Path, docx_path: Path):
             run = p.add_run("\n".join(code_lines))
             run.font.name = "Courier New"
             run.font.size = Pt(9)
+            i += 1
+            continue
+
+        # 그림 마커 <!-- FIGURE:path -->
+        m_fig = re.match(r'^<!-- FIGURE:(.+?) -->$', stripped)
+        if m_fig:
+            fig_path = Path(m_fig.group(1).strip())
+            if fig_path.exists():
+                try:
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    run = p.add_run()
+                    run.add_picture(str(fig_path), width=Inches(5.5))
+                except Exception:
+                    pass  # 그림 삽입 실패 시 조용히 skip
             i += 1
             continue
 
