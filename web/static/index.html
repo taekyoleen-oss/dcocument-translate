@@ -370,6 +370,31 @@
 
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
     .pulse { animation: pulse 1.8s ease-in-out infinite; }
+
+    /* ── Doc type select (header) ───────────────────────────────── */
+    .doc-type-select {
+      background: var(--secondary);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+      margin-left: auto;
+    }
+    .doc-type-select option { background: var(--primary); }
+
+    /* ── Word download button ───────────────────────────────────── */
+    .btn-word { background: #217346; color: #fff; }
+    .btn-word:hover { background: #1e6b41; }
+
+    /* ── Doc type badges (sidebar) ──────────────────────────────── */
+    .badge-doc-academic  { background: #dbeafe; color: #1e40af; }
+    .badge-doc-insurance { background: #d1fae5; color: #065f46; }
+    .badge-doc-general   { background: #f3f4f6; color: #374151; }
+    .badge-group { display: inline-flex; gap: 4px; align-items: center; }
   </style>
 </head>
 <body>
@@ -379,7 +404,12 @@
   <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="히스토리 숨기기">☰</button>
   <span class="logo">📄</span>
   <h1>논문 번역 시스템</h1>
-  <span class="sub">영문 학술 논문 PDF → 한국어 번역</span>
+  <span class="sub">PDF 문서 한국어 번역</span>
+  <select id="docTypeSelect" class="doc-type-select" title="문서 유형 선택" onchange="saveDocType()">
+    <option value="academic">학술논문</option>
+    <option value="insurance">보험약관</option>
+    <option value="general">일반내용</option>
+  </select>
 </header>
 
 <!-- ── Layout ─────────────────────────────────────────────────────────── -->
@@ -487,6 +517,7 @@
           <button id="btn-summary"                   onclick="switchView('summary')">요약</button>
         </div>
         <button id="btn-download" class="btn btn-success" onclick="downloadPDF()">⬇ 다운로드</button>
+        <button id="btn-download-word" class="btn btn-word hidden" onclick="downloadWord()">📝 Word</button>
       </div>
       <iframe class="pdf-frame" id="pdf-frame" src="about:blank"></iframe>
       <!-- 요약 상태 패널 (PDF 뷰어 대체) -->
@@ -526,6 +557,7 @@
   /* ── Init ──────────────────────────────────────────────────── */
   (async function init() {
     restoreSidebar();
+    restoreDocType();
     await refreshHistory();
 
     // 페이지 새로고침 시 진행 중인 Job 복원
@@ -542,7 +574,7 @@
     } else if (readyJob) {
       currentJobId = readyJob.id;
       highlightHist(readyJob.id);
-      showReady(readyJob.filename, readyJob.page_count, readyJob.lang);
+      showReady(readyJob.filename, readyJob.page_count, readyJob.lang, readyJob.doc_type);
     }
   })();
 
@@ -580,9 +612,16 @@
     ja: { label: '일본어', flag: '🇯🇵' },
   };
 
+  const DOC_TYPE_LABEL = {
+    academic:  '논문',
+    insurance: '보험약관',
+    general:   '문서',
+  };
+
   async function uploadFile(file) {
     const fd = new FormData();
     fd.append('file', file);
+    fd.append('doc_type', document.getElementById('docTypeSelect').value);
     try {
       // 업로드 중 표시
       showSection('status');
@@ -593,26 +632,27 @@
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || `서버 오류 (${res.status})`);
       }
-      const { job_id, filename, page_count, lang } = await res.json();
+      const { job_id, filename, page_count, lang, doc_type } = await res.json();
       currentJobId = job_id;
 
       await refreshHistory();
       highlightHist(job_id);
 
       // 번역 대기 화면으로 전환
-      showReady(filename, page_count, lang);
+      showReady(filename, page_count, lang, doc_type);
     } catch (err) {
       applyStatus({ status: 'failed', filename: file.name, current_step: '업로드 실패', progress: 0, error: err.message });
     }
   }
 
-  function showReady(filename, pageCount, lang) {
+  function showReady(filename, pageCount, lang, docType) {
     showSection('ready');
     document.getElementById('r-file').textContent = filename;
     const lm = LANG_META[lang] || { label: lang || '알 수 없음', flag: '🌐' };
+    const dt = DOC_TYPE_LABEL[docType] || '문서';
     const pageStr = pageCount ? `총 ${pageCount}페이지` : '';
     document.getElementById('r-meta').textContent =
-      [pageStr, `${lm.flag} ${lm.label} 논문`, '번역 실행 버튼을 눌러 시작하세요']
+      [pageStr, `${lm.flag} ${lm.label} ${dt}`, '번역 실행 버튼을 눌러 시작하세요']
         .filter(Boolean).join(' · ');
   }
 
@@ -723,6 +763,7 @@
   function openViewer(job) {
     showSection('viewer');
     document.getElementById('viewer-section').dataset.jobId = job.id;
+    document.getElementById('viewer-section').dataset.hasDocx = job.output_docx ? '1' : '0';
     currentView = 'translated';
     document.getElementById('btn-translated').classList.add('active');
     document.getElementById('btn-original').classList.remove('active');
@@ -732,6 +773,7 @@
     document.getElementById('v-filename').textContent = job.filename + '  →  번역본';
     document.getElementById('pdf-frame').src = `/api/jobs/${job.id}/view-translated`;
     setDownloadEnabled(true);
+    document.getElementById('btn-download-word').classList.toggle('hidden', !job.output_docx);
     if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
   }
 
@@ -745,6 +787,7 @@
     document.getElementById('btn-summary').classList.toggle('active', view === 'summary');
 
     if (view === 'summary') {
+      document.getElementById('btn-download-word').classList.add('hidden');
       if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
       try {
         const job = await fetchJSON(`/api/jobs/${jobId}`);
@@ -763,6 +806,8 @@
         : `/api/jobs/${jobId}/view-original`;
       document.getElementById('pdf-frame').src = url;
       setDownloadEnabled(view === 'translated');
+      const hasDocx = document.getElementById('viewer-section').dataset.hasDocx === '1';
+      document.getElementById('btn-download-word').classList.toggle('hidden', view !== 'translated' || !hasDocx);
     }
   }
 
@@ -878,6 +923,17 @@
     document.body.removeChild(a);
   }
 
+  function downloadWord() {
+    const jobId = document.getElementById('viewer-section').dataset.jobId;
+    if (!jobId) return;
+    const a = document.createElement('a');
+    a.href = `/api/jobs/${jobId}/download-word`;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
   /* ── History ───────────────────────────────────────────────── */
   async function refreshHistory() {
     const jobs = await fetchJSON('/api/jobs').catch(() => []);
@@ -907,7 +963,7 @@
           <div class="hist-name" title="${esc(job.filename)}">${esc(job.filename)}</div>
           <div class="hist-meta">
             <span class="hist-date">${fmt}</span>
-            ${badgeHTML(job.status)}
+            <span class="badge-group">${docTypeBadgeHTML(job.doc_type)}${badgeHTML(job.status)}</span>
           </div>
         </div>`;
     }).join('');
@@ -921,7 +977,9 @@
       const dateEl = meta.querySelector('.hist-date');
       meta.innerHTML = '';
       if (dateEl) meta.appendChild(dateEl);
-      meta.insertAdjacentHTML('beforeend', badgeHTML(job.status));
+      meta.insertAdjacentHTML('beforeend',
+        `<span class="badge-group">${docTypeBadgeHTML(job.doc_type)}${badgeHTML(job.status)}</span>`
+      );
     }
   }
 
@@ -940,7 +998,7 @@
         showSection('viewer');
         openViewer(job);
       } else if (job.status === 'ready') {
-        showReady(job.filename, job.page_count, job.lang);
+        showReady(job.filename, job.page_count, job.lang, job.doc_type);
       } else if (job.status === 'failed' || job.status === 'cancelled') {
         showSection('status');
         applyStatus(job);
@@ -952,6 +1010,19 @@
         startPoll(jobId);
       }
     } catch (_) {}
+  }
+
+  /* ── Doc type select ───────────────────────────────────────── */
+  function saveDocType() {
+    localStorage.setItem('docType', document.getElementById('docTypeSelect').value);
+  }
+
+  function restoreDocType() {
+    const saved = localStorage.getItem('docType');
+    if (saved) {
+      const sel = document.getElementById('docTypeSelect');
+      if ([...sel.options].some(o => o.value === saved)) sel.value = saved;
+    }
   }
 
   /* ── Sidebar toggle ────────────────────────────────────────── */
@@ -1007,6 +1078,15 @@
       cancelled:  '<span class="badge badge-cancelled">취소</span>',
     };
     return map[status] || '';
+  }
+
+  function docTypeBadgeHTML(docType) {
+    const map = {
+      academic:  '<span class="badge badge-doc-academic">학술</span>',
+      insurance: '<span class="badge badge-doc-insurance">보험</span>',
+      general:   '<span class="badge badge-doc-general">일반</span>',
+    };
+    return map[docType] || '';
   }
 </script>
 </body>

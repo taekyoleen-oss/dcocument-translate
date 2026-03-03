@@ -12,9 +12,12 @@ from pathlib import Path
 from datetime import datetime
 from threading import Lock
 
+import re
+
 import anthropic
 import pdfplumber
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from docx import Document
+from fastapi import FastAPI, Form, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
@@ -40,6 +43,12 @@ DOMAIN_LABELS = {
     "biology":   "생물학",
     "economics": "경제학",
     "general":   "일반 학술",
+}
+
+DOC_TYPES = {
+    "academic":  "학술논문",
+    "insurance": "보험약관",
+    "general":   "일반내용",
 }
 
 # ── 스레드 안전 jobs.json 접근 ────────────────────────────────────────────────
@@ -125,30 +134,109 @@ def _check_cancel(job_id: str):
 
 
 # ── 번역 파이프라인 (동기) ───────────────────────────────────────────────────
-def _translate_chunk(client: anthropic.Anthropic, text: str, domain: str, lang: str, job_id: str = None) -> str:
-    domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
-    lang_label   = LANG_LABELS.get(lang, "영어")
+def _get_translation_prompt(doc_type: str, domain: str, lang: str) -> str:
+    """문서 유형별·언어별 번역 시스템 프롬프트 반환."""
+    lang_label = LANG_LABELS.get(lang, "영어")
+    is_ja = (lang == "ja")
 
-    if lang == "ja":
-        rules = (
-            "- 일본어 학술 문체(です・ます체, である체)를 자연스러운 한국어 학술 문체로 번역하세요\n"
-            "- 일본어 고유 표현·관용구는 한국어로 의미를 살려 번역하세요\n"
-            "- 저자명·기관명은 원문(일본어/영어) 유지 후 필요시 괄호 안에 한국어 추가\n"
-        )
-    else:
-        rules = (
-            "- 저자명, 기관명, 모델명은 원문 유지 (필요시 괄호 안에 한국어 추가)\n"
+    if doc_type == "insurance":
+        if is_ja:
+            lang_rules = (
+                "- 일본 법률·보험 전문 용어는 한국 표준 용어로 번역하고 첫 등장 시 괄호 안에 일본어 원문 병기하세요\n"
+                "- 일본어 경어·문어 표현(ます体·である体)은 자연스러운 한국어 문어체로 번역하세요\n"
+                "- 고유명사(인물명·기관명)는 원문(일본어) 유지 후 필요시 한국어 추가\n"
+            )
+        else:
+            lang_rules = "- 영문 전문 용어는 첫 등장 시 괄호 안에 원문 병기하세요\n"
+        return (
+            f"당신은 {lang_label} 보험약관·금융·법률 문서를 한국어로 번역하는 전문가입니다.\n\n"
+            "번역 규칙:\n"
+            "- 보험 업계 표준 용어를 사용하세요 (보험계약자, 피보험자, 보험금, 보험료 등)\n"
+            "- 조항 번호는 원본 형식 그대로 유지하세요 (第1条, 제1조, Article 1 등)\n"
+            "- 금액·비율·날짜·기간 등 수치를 정확히 번역하세요\n"
+            "- 법적 면책 문구의 원문 의미를 정확하게 전달하세요\n"
+            + lang_rules +
+            "- 마크다운 형식 유지: # 제목, ## 섹션, ### 부제목, **굵게**, *기울임*\n"
+            "- 번역된 텍스트만 출력하고 추가 설명은 하지 마세요\n"
         )
 
+    elif doc_type == "general":
+        if is_ja:
+            lang_rules = (
+                "- 일본어 특유 표현·관용구는 한국어로 의미를 살려 번역하세요\n"
+                "- 고유명사(인물명·지명·작품명)는 원문(일본어) 또는 통용 한국어 표기를 사용하세요\n"
+                "- 일본어 경어 표현은 적절한 한국어 문체로 번역하세요\n"
+            )
+        else:
+            lang_rules = "- 고유명사는 원문 또는 통용 한국어 표기를 사용하세요\n"
+        return (
+            f"당신은 {lang_label} 도서·문서를 한국어로 번역하는 전문가입니다.\n\n"
+            "번역 규칙:\n"
+            "- 자연스럽고 읽기 쉬운 한국어로 번역하세요\n"
+            + lang_rules +
+            "- 직역보다 의미 전달을 우선시하세요\n"
+            "- 마크다운 형식 유지: # 제목, ## 섹션, ### 부제목, **굵게**, *기울임*\n"
+            "- 번역된 텍스트만 출력하고 추가 설명은 하지 마세요\n"
+        )
+
+    else:  # academic (기본값)
+        domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
+        if is_ja:
+            lang_rules = (
+                "- 일본어 학술 문체(です・ます体, である体)를 자연스러운 한국어 학술 문체로 번역하세요\n"
+                "- 일본어 고유 표현·관용구는 한국어로 의미를 살려 번역하세요\n"
+                "- 저자명·기관명은 원문(일본어/영어) 유지 후 필요시 괄호 안에 한국어 추가\n"
+            )
+        else:
+            lang_rules = "- 저자명, 기관명, 모델명은 원문 유지 (필요시 괄호 안에 한국어 추가)\n"
+        return (
+            f"당신은 {domain_label} 분야 {lang_label} 학술 논문을 한국어로 번역하는 전문가입니다.\n\n"
+            "번역 규칙:\n"
+            "- 학술 전문 용어를 정확하게 번역하세요\n"
+            "- LaTeX 수식($...$, $$...$$)은 원문 그대로 유지하세요\n"
+            + lang_rules +
+            "- 마크다운 형식 유지: # 제목, ## 섹션, ### 부제목, **굵게**, *기울임*\n"
+            "- 번역된 텍스트만 출력하고 추가 설명은 하지 마세요\n"
+        )
+
+
+def _get_summary_prompt(doc_type: str) -> str:
+    """문서 유형별 요약 구조 프롬프트 반환."""
+    if doc_type == "insurance":
+        return (
+            "요약문 구조 (마크다운 형식):\n"
+            "# [보험 상품명 또는 약관 핵심을 한 줄로]\n\n"
+            "## 주요 보장 내용\n"
+            "## 보험금 지급 조건\n"
+            "## 면책 사항\n"
+            "## 납입 조건 및 보험 기간\n"
+            "## 주요 특약\n"
+        )
+    elif doc_type == "general":
+        return (
+            "요약문 구조 (마크다운 형식):\n"
+            "# [핵심 주제를 한 줄로]\n\n"
+            "## 핵심 주제\n"
+            "## 주요 내용\n"
+            "## 핵심 포인트\n"
+            "## 결론\n"
+        )
+    else:  # academic
+        return (
+            "요약문 구조 (마크다운 형식):\n"
+            "# [논문의 핵심 주제를 한 줄로]\n\n"
+            "## 연구 배경 및 문제 제기\n"
+            "## 제안 방법 및 접근법\n"
+            "## 주요 결과\n"
+            "## 결론 및 기여\n"
+        )
+
+
+def _translate_chunk(client: anthropic.Anthropic, text: str, domain: str, lang: str, job_id: str = None, doc_type: str = "academic") -> str:
+    system_instr = _get_translation_prompt(doc_type, domain, lang)
     prompt = (
-        f"당신은 {domain_label} 분야 {lang_label} 학술 논문을 한국어로 번역하는 전문가입니다.\n\n"
-        "번역 규칙:\n"
-        "- 학술 전문 용어를 정확하게 번역하세요\n"
-        "- LaTeX 수식($...$, $$...$$)은 원문 그대로 유지하세요\n"
-        + rules +
-        "- 마크다운 형식 유지: # 제목, ## 섹션, ### 부제목, **굵게**, *기울임*\n"
-        "- 번역된 텍스트만 출력하고 추가 설명은 하지 마세요\n\n"
-        "번역할 텍스트:\n"
+        system_instr
+        + "\n번역할 텍스트:\n"
         "---\n"
         f"{text}\n"
         "---\n\n"
@@ -234,8 +322,9 @@ def _process_translation_sync(job_id: str):
             )
 
         # ── Step 3: Claude API 번역 ───────────────────────────────────────
-        client = anthropic.Anthropic()
-        domain = detect_domain(job["filename"])
+        client   = anthropic.Anthropic()
+        domain   = detect_domain(job["filename"])
+        doc_type = job.get("doc_type", "academic")
         lang_label = LANG_LABELS.get(lang, lang)
         total_chunks = len(chunks)
         translated_parts: list[str] = []
@@ -247,7 +336,7 @@ def _process_translation_sync(job_id: str):
                 "progress": progress,
                 "current_step": f"{lang_label} 번역 중 ({i+1}/{total_chunks} 청크 / {total_pages} 페이지)"
             })
-            translated = _translate_chunk(client, chunk, domain, lang, job_id)
+            translated = _translate_chunk(client, chunk, domain, lang, job_id, doc_type)
             translated_parts.append(translated)
 
         # ── Step 4: 마크다운 파일 생성 ───────────────────────────────────
@@ -277,12 +366,23 @@ def _process_translation_sync(job_id: str):
             stderr = result.stderr.strip() or "(stderr 없음)"
             raise RuntimeError(f"PDF 생성 실패:\n{stderr}")
 
+        # ── Step 6: 마크다운 → DOCX ──────────────────────────────────────
+        update_job(job_id, {"current_step": "Word 파일 생성 중", "progress": 96})
+        docx_path = output_dir / f"{paper_id}_번역.docx"
+        output_docx = None
+        try:
+            _generate_docx(md_path, docx_path)
+            output_docx = str(docx_path)
+        except Exception:
+            pass  # DOCX 생성 실패해도 번역은 완료 처리
+
         update_job(job_id, {
             "status":       "completed",
             "current_step": "완료",
             "progress":     100,
             "completed_at": datetime.now().isoformat(),
             "output_pdf":   str(output_pdf),
+            "output_docx":  output_docx,
         })
 
     except TranslationCancelledError:
@@ -308,12 +408,141 @@ async def process_translation(job_id: str):
     await asyncio.to_thread(_process_translation_sync, job_id)
 
 
+# ── DOCX 생성 ────────────────────────────────────────────────────────────────
+def _parse_table_row(line: str) -> list[str]:
+    """파이프 테이블 행을 셀 목록으로 파싱."""
+    return [c.strip() for c in line.strip().strip('|').split('|')]
+
+
+def _add_inline_runs(paragraph, text: str):
+    """마크다운 인라인 서식(**bold**, *italic*, `code`)을 Word run으로 변환."""
+    from docx.shared import Pt
+    pattern = re.compile(r'(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)')
+    last = 0
+    for m in pattern.finditer(text):
+        if m.start() > last:
+            paragraph.add_run(text[last:m.start()])
+        full = m.group(0)
+        if full.startswith('**'):
+            run = paragraph.add_run(m.group(2))
+            run.bold = True
+        elif full.startswith('*'):
+            run = paragraph.add_run(m.group(3))
+            run.italic = True
+        else:
+            run = paragraph.add_run(m.group(4))
+            run.font.name = 'Courier New'
+            run.font.size = Pt(9)
+        last = m.end()
+    if last < len(text):
+        paragraph.add_run(text[last:])
+
+
+def _generate_docx(md_path: Path, docx_path: Path):
+    """마크다운 파일을 Word(.docx) 파일로 변환."""
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+    content = md_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # 코드 블록
+        if stripped.startswith("```"):
+            i += 1
+            code_lines = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            p = doc.add_paragraph()
+            run = p.add_run("\n".join(code_lines))
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+            i += 1
+            continue
+
+        # 수평선 (청크 구분자)
+        if re.match(r'^-{3,}$', stripped):
+            doc.add_paragraph()
+            i += 1
+            continue
+
+        # 헤더
+        m = re.match(r'^(#{1,6})\s+(.*)', line)
+        if m:
+            level = min(len(m.group(1)), 3)
+            doc.add_heading(m.group(2).strip(), level=level)
+            i += 1
+            continue
+
+        # 테이블
+        if stripped.startswith('|'):
+            table_lines = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+            data_rows = [
+                l for l in table_lines
+                if not re.match(r'^\|[\s\-|:]+\|$', l.strip())
+            ]
+            if data_rows:
+                parsed = [_parse_table_row(r) for r in data_rows]
+                max_cols = max(len(r) for r in parsed)
+                table = doc.add_table(rows=len(parsed), cols=max_cols)
+                table.style = 'Table Grid'
+                for r_idx, row_data in enumerate(parsed):
+                    for c_idx in range(max_cols):
+                        cell_text = row_data[c_idx] if c_idx < len(row_data) else ''
+                        _add_inline_runs(
+                            table.rows[r_idx].cells[c_idx].paragraphs[0], cell_text
+                        )
+            continue
+
+        # 순서 없는 목록
+        m = re.match(r'^\s*[-*+]\s+(.*)', line)
+        if m:
+            p = doc.add_paragraph(style='List Bullet')
+            _add_inline_runs(p, m.group(1))
+            i += 1
+            continue
+
+        # 순서 있는 목록
+        m = re.match(r'^\s*\d+\.\s+(.*)', line)
+        if m:
+            p = doc.add_paragraph(style='List Number')
+            _add_inline_runs(p, m.group(1))
+            i += 1
+            continue
+
+        # 빈 줄
+        if not stripped:
+            i += 1
+            continue
+
+        # 일반 단락
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        _add_inline_runs(p, line)
+        i += 1
+
+    doc.save(str(docx_path))
+
+
 # ── 요약 파이프라인 ───────────────────────────────────────────────────────────
-def _summarize_section(client: anthropic.Anthropic, text: str, domain: str) -> str:
+def _summarize_section(client: anthropic.Anthropic, text: str, domain: str, doc_type: str = "academic") -> str:
     """단일 섹션(청크)의 핵심 내용을 추출한다."""
-    domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
+    if doc_type == "insurance":
+        doc_label = "보험약관"
+    elif doc_type == "general":
+        doc_label = "일반 문서"
+    else:
+        doc_label = DOMAIN_LABELS.get(domain, "일반 학술") + " 분야 논문"
     prompt = (
-        f"다음은 {domain_label} 분야 논문의 한국어 번역 일부입니다.\n"
+        f"다음은 {doc_label}의 한국어 번역 일부입니다.\n"
         "이 부분의 핵심 내용만 간결하게 추출해주세요.\n"
         "전문 용어와 수치 결과는 그대로 유지하고, 단락 형식으로 출력하세요.\n"
         "추가 설명 없이 핵심 내용만 출력하세요.\n\n"
@@ -327,26 +556,29 @@ def _summarize_section(client: anthropic.Anthropic, text: str, domain: str) -> s
     return response.content[0].text.strip()
 
 
-def _generate_final_summary(client: anthropic.Anthropic, combined_points: str, domain: str) -> str:
+def _generate_final_summary(client: anthropic.Anthropic, combined_points: str, domain: str, doc_type: str = "academic") -> str:
     """섹션별 핵심 내용 조각들로 구조화된 최종 요약을 생성한다."""
-    domain_label = DOMAIN_LABELS.get(domain, "일반 학술")
+    if doc_type == "insurance":
+        doc_label  = "보험약관"
+        style_rule = "- 법률·금융 용어는 정확하게 사용하세요\n"
+    elif doc_type == "general":
+        doc_label  = "일반 문서"
+        style_rule = "- 읽기 쉬운 자연스러운 문체로 작성하세요\n"
+    else:
+        doc_label  = DOMAIN_LABELS.get(domain, "일반 학술") + " 분야 학술 논문"
+        style_rule = "- 중요한 수치와 통계는 반드시 포함하세요\n"
+    structure = _get_summary_prompt(doc_type)
     prompt = (
-        f"당신은 {domain_label} 분야 학술 논문 요약 전문가입니다.\n\n"
-        "다음은 논문의 각 섹션에서 추출한 핵심 내용입니다. "
-        "이를 바탕으로 논문이 말하고자 하는 바를 중심으로 구조화된 한국어 요약문을 작성하세요.\n\n"
-        "요약문 구조 (마크다운 형식):\n"
-        "# [논문의 핵심 주제를 한 줄로]\n\n"
-        "## 연구 배경 및 문제 제기\n"
-        "## 제안 방법 및 접근법\n"
-        "## 주요 결과\n"
-        "## 결론 및 기여\n\n"
+        f"당신은 {doc_label} 요약 전문가입니다.\n\n"
+        "다음은 문서의 각 섹션에서 추출한 핵심 내용입니다. "
+        "이를 바탕으로 구조화된 한국어 요약문을 작성하세요.\n\n"
+        + structure + "\n"
         "작성 규칙:\n"
         "- 각 섹션은 3-5 문장으로 핵심만 서술하세요\n"
-        "- 중요한 수치와 통계는 반드시 포함하세요\n"
+        + style_rule +
         "- 전문 용어는 그대로 사용하세요\n"
-        "- 객관적이고 학술적인 문체로 작성하세요\n"
         "- 추가 설명 없이 요약 본문만 출력하세요\n\n"
-        "논문 핵심 내용:\n"
+        "문서 핵심 내용:\n"
         f"---\n{combined_points}\n---\n\n"
         "한국어 요약:"
     )
@@ -414,6 +646,7 @@ def _process_summary_sync(job_id: str):
         # ── Step 3: 각 청크 핵심 내용 추출 ───────────────────────────
         client       = anthropic.Anthropic()
         domain       = detect_domain(job["filename"])
+        doc_type     = job.get("doc_type", "academic")
         total_chunks = len(chunks)
         section_summaries: list[str] = []
 
@@ -423,12 +656,12 @@ def _process_summary_sync(job_id: str):
                 "summary_step":     f"핵심 내용 추출 중 ({i+1}/{total_chunks})",
                 "summary_progress": progress,
             })
-            section_summaries.append(_summarize_section(client, chunk, domain))
+            section_summaries.append(_summarize_section(client, chunk, domain, doc_type))
 
         # ── Step 4: 구조화된 최종 요약 생성 ──────────────────────────
         update_job(job_id, {"summary_step": "요약 정리 중", "summary_progress": 72})
         combined      = "\n\n".join(section_summaries)
-        final_summary = _generate_final_summary(client, combined, domain)
+        final_summary = _generate_final_summary(client, combined, domain, doc_type)
 
         # ── Step 5: 마크다운 저장 ──────────────────────────────────────
         update_job(job_id, {"summary_step": "요약 저장 중", "summary_progress": 85})
@@ -482,6 +715,7 @@ app = FastAPI(title="논문 번역 시스템")
 @app.post("/api/upload")
 async def upload_file(
     file: UploadFile = File(...),
+    doc_type: str = Form("academic"),
 ):
     """PDF 업로드만 수행. 번역은 /api/jobs/{id}/start 호출 시 시작."""
     if not file.filename.lower().endswith(".pdf"):
@@ -517,12 +751,14 @@ async def upload_file(
         "id":           job_id,
         "filename":     file.filename,
         "paper_id":     paper_id,
+        "doc_type":     doc_type if doc_type in DOC_TYPES else "academic",
         "status":       "ready",
         "created_at":   datetime.now().isoformat(),
         "completed_at": None,
         "error":        None,
         "input_path":   str(input_path),
         "output_pdf":   None,
+        "output_docx":  None,
         "progress":     0,
         "current_step": "번역 대기 중",
         "page_count":   page_count,
@@ -538,6 +774,7 @@ async def upload_file(
         "filename":   file.filename,
         "page_count": page_count,
         "lang":       lang,
+        "doc_type":   doc_type,
     }
 
 
@@ -668,6 +905,26 @@ async def download_translated(job_id: str):
     return FileResponse(
         str(pdf_path),
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
+
+
+@app.get("/api/jobs/{job_id}/download-word")
+async def download_word(job_id: str):
+    """번역본 Word(.docx) 다운로드."""
+    job = get_job(job_id)
+    if not job or job["status"] != "completed":
+        raise HTTPException(404, "번역된 Word 파일이 없습니다.")
+    docx_path_str = job.get("output_docx")
+    if not docx_path_str:
+        raise HTTPException(404, "Word 파일이 생성되지 않았습니다.")
+    docx_path = Path(docx_path_str)
+    if not docx_path.exists():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    download_name = f"{Path(job['filename']).stem}_번역.docx"
+    return FileResponse(
+        str(docx_path),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
 
