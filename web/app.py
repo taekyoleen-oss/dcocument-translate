@@ -16,7 +16,6 @@ import re
 
 import anthropic
 import pdfplumber
-from docx import Document
 from fastapi import FastAPI, Form, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -440,6 +439,7 @@ def _add_inline_runs(paragraph, text: str):
 
 def _generate_docx(md_path: Path, docx_path: Path):
     """마크다운 파일을 Word(.docx) 파일로 변환."""
+    from docx import Document
     from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
